@@ -3,7 +3,6 @@ In this codebase, the "Agent" is a container with the policy, value function, et
 This file contains a bunch of agents
 """
 
-
 from modular_rl import *
 from gym.spaces import Box, Discrete
 from collections import OrderedDict
@@ -12,6 +11,7 @@ from keras.layers.core import Dense
 from keras.layers.advanced_activations import LeakyReLU
 from modular_rl.trpo import TrpoUpdater
 from modular_rl.ppo import PpoLbfgsUpdater, PpoSgdUpdater
+import keras
 
 MLP_OPTIONS = [
     ("hid_sizes", comma_sep_ints, [64,64], "Sizes of hidden layers of MLP"),
@@ -27,6 +27,7 @@ def make_mlps(ob_space, ac_space, cfg):
     elif isinstance(ac_space, Discrete):
         outdim = ac_space.n
         probtype = Categorical(outdim)
+    # policy network
     net = Sequential()
     for (i, layeroutsize) in enumerate(hid_sizes):
         inshp = dict(input_shape=ob_space.shape) if i==0 else {}
@@ -40,12 +41,18 @@ def make_mlps(ob_space, ac_space, cfg):
         net.add(Dense(outdim, activation="softmax"))
         Wlast = net.layers[-1].W
         Wlast.set_value(Wlast.get_value(borrow=True)*0.1)
+        # not sure what this line does.
     policy = StochPolicyKeras(net, probtype)
+    # value function network
     vfnet = Sequential()
     for (i, layeroutsize) in enumerate(hid_sizes):
         inshp = dict(input_shape=(ob_space.shape[0]+1,)) if i==0 else {} # add one extra feature for timestep
-        vfnet.add(Dense(layeroutsize, activation=cfg["activation"], **inshp))
+        vfnet.add(Dense(layeroutsize, activation=cfg["activation"], init="glorot_uniform",**inshp))
     vfnet.add(Dense(1))
+
+    for layer in vfnet.layers:
+        layer.W.set_value(layer.W.get_value(borrow=True)*1000)
+    
     baseline = NnVf(vfnet, cfg["timestep_limit"], dict(mixfrac=0.1))
     return policy, baseline
 

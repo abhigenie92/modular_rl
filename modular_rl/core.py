@@ -8,7 +8,8 @@ from importlib import import_module
 import scipy.optimize
 from .keras_theano_setup import floatX, FNOPTS
 from keras.layers.core import Layer
-
+import ipdb
+from scipy.linalg import norm
 # ================================================================
 # Make agent 
 # ================================================================
@@ -17,6 +18,7 @@ def get_agent_cls(name):
     p, m = name.rsplit('.', 1)
     mod = import_module(p)
     constructor = getattr(mod, m)
+    # <class 'modular_rl.agentzoo.TrpoAgent'>
     return constructor
 
 # ================================================================
@@ -72,10 +74,11 @@ PG_OPTIONS = [
     ("lam", float, 1.0, "lambda parameter from generalized advantage estimation"),
 ]
 
-def run_policy_gradient_algorithm(env, agent, usercfg=None, callback=None):
+def run_policy_gradient_algorithm(env, agent, usercfg=None, callback=None,debug=False):
     cfg = update_default_config(PG_OPTIONS, usercfg)
     cfg.update(usercfg)
-    print "policy gradient config", cfg
+    if debug:
+        print "policy gradient config", cfg
 
     if cfg["parallel"]:
         raise NotImplementedError
@@ -85,10 +88,11 @@ def run_policy_gradient_algorithm(env, agent, usercfg=None, callback=None):
 
     for _ in xrange(cfg["n_iter"]):
         # Rollouts ========
+
         paths = get_paths(env, agent, cfg, seed_iter)
         compute_advantage(agent.baseline, paths, gamma=cfg["gamma"], lam=cfg["lam"])
         # VF Update ========
-        vf_stats = agent.baseline.fit(paths)
+        vf_stats, variance = agent.baseline.fit(paths)
         # Pol Update ========
         pol_stats = agent.updater(paths)
         # Stats ========
@@ -97,7 +101,7 @@ def run_policy_gradient_algorithm(env, agent, usercfg=None, callback=None):
         add_prefixed_stats(stats, "vf", vf_stats)
         add_prefixed_stats(stats, "pol", pol_stats)
         stats["TimeElapsed"] = time.time() - tstart
-        if callback: callback(stats)
+        if callback: callback(stats,agent,variance,debug)
 
 def get_paths(env, agent, cfg, seed_iter):
     if cfg["parallel"]:
@@ -389,6 +393,7 @@ class TimeDependentBaseline(Baseline):
             else:
                 return self.baseline[:lenpath]
 
+
 class NnRegression(EzPickle):
     def __init__(self, net, mixfrac=1.0, maxiter=25):
         EzPickle.__init__(self, net, mixfrac, maxiter)
@@ -397,7 +402,6 @@ class NnRegression(EzPickle):
 
         x_nx = net.input
         self.predict = theano.function([x_nx], net.output, **FNOPTS)
-
         ypred_ny = net.output
         ytarg_ny = T.matrix("ytarg")
         var_list = net.trainable_weights
@@ -406,11 +410,23 @@ class NnRegression(EzPickle):
         mse = T.sum(T.square(ytarg_ny - ypred_ny))/N
         symb_args = [x_nx, ytarg_ny]
         loss = mse + l2
-        self.opt = LbfgsOptimizer(loss, var_list, symb_args, maxiter=maxiter, extra_losses={"mse":mse, "l2":l2})
+        self.opt = LbfgsOptimizer(net, loss, var_list, symb_args, maxiter=maxiter, extra_losses={"mse":mse, "l2":l2})
 
     def fit(self, x_nx, ytarg_ny):
+        import ipdb
+        inp=self.net.input
+        from keras import backend as K
+
+        outputs = [layer.output for layer in self.net.layers]          # all layer outputs
+        functors = [K.function([inp], [out]) for out in outputs]    # evaluation functions
+        layer_outs = [func([x_nx]) for func in functors]
+        variance=[]
+        for layer in layer_outs[:len(layer_outs)-1]:
+            variance.append(np.mean(np.var(layer[0],axis=1)))
+        
         nY = ytarg_ny.shape[1]
         ypredold_ny = self.predict(x_nx)
+        # weird considers predicted as 0.1 still in the old.
         out = self.opt.update(x_nx, ytarg_ny*self.mixfrac + ypredold_ny*(1-self.mixfrac))
         yprednew_ny = self.predict(x_nx)
         out["PredStdevBefore"] = ypredold_ny.std()
@@ -421,7 +437,7 @@ class NnRegression(EzPickle):
             out["EV_after"] =  explained_variance_2d(yprednew_ny, ytarg_ny)[0]
         else:
             out["EV_avg"] = explained_variance(yprednew_ny.ravel(), ytarg_ny.ravel())
-        return out
+        return out, variance
 
 
 class NnVf(object):
@@ -436,6 +452,7 @@ class NnVf(object):
         vtarg_n1 = concat([path["return"] for path in paths]).reshape(-1,1)
         return self.reg.fit(ob_no, vtarg_n1)
     def preproc(self, ob_no):
+        # adds the time-step as a feature weird!
         return concat([ob_no, np.arange(len(ob_no)).reshape(-1,1) / float(self.timestep_limit)], axis=1)
 
 
@@ -451,11 +468,10 @@ class NnCpd(EzPickle):
         var_list = net.trainable_weights
 
         loglik = probtype.loglikelihood(a, prob)
-
         self.loglikelihood = theano.function([a, x_nx], loglik, **FNOPTS)
         loss = - loglik.mean()
         symb_args = [x_nx, a]
-        self.opt = LbfgsOptimizer(loss, var_list, symb_args, maxiter=maxiter)
+        self.opt = LbfgsOptimizer(net, loss, var_list, symb_args, maxiter=maxiter)
 
     def fit(self, x_nx, a):
         return self.opt.update(x_nx, a)
@@ -466,7 +482,7 @@ class SetFromFlat(object):
         theta = T.vector()
         start = 0
         updates = []
-        for v in var_list:
+        for v in var_list:     
             shape = v.shape
             size = T.prod(shape)
             updates.append((v, theta[start:start+size].reshape(shape)))
@@ -491,8 +507,10 @@ class EzFlat(object):
         return self.gf()
 
 class LbfgsOptimizer(EzFlat):
-    def __init__(self, loss,  params, symb_args, extra_losses=None, maxiter=25):
+    def __init__(self, net, loss,  params, symb_args, extra_losses=None, maxiter=25):
+        
         EzFlat.__init__(self, params)
+        self.net=net
         self.all_losses = OrderedDict()
         self.all_losses["loss"] = loss        
         if extra_losses is not None:
@@ -500,6 +518,7 @@ class LbfgsOptimizer(EzFlat):
         self.f_lossgrad = theano.function(list(symb_args), [loss, flatgrad(loss, params)],**FNOPTS)
         self.f_losses = theano.function(symb_args, self.all_losses.values(),**FNOPTS)
         self.maxiter=maxiter
+        self.params=params
 
     def update(self, *args):
         thprev = self.get_params_flat()
@@ -509,7 +528,23 @@ class LbfgsOptimizer(EzFlat):
             g = g.astype('float64')
             return (l,g)
         losses_before = self.f_losses(*args)
+
         theta, _, opt_info = scipy.optimize.fmin_l_bfgs_b(lossandgrad, thprev, maxiter=self.maxiter)
+        param_wts=self.params[::2]
+        updates = []
+        grad_w_norms=[]
+        start=0
+
+        for layer in  self.net.layers:
+            wts_shape = layer.get_weights()[0].shape
+            bias_shape = layer.get_weights()[1].shape
+            wts_size = wts_shape[0]*wts_shape[1]
+            bias_size = bias_shape[0]
+            grad_w=opt_info['grad'][start:start+wts_size].reshape(wts_shape)
+            start += wts_size+bias_size
+            ipdb.set_trace()
+            grad_w_norms.append(norm(grad_w,axis=0))
+                
         del opt_info['grad']
         print opt_info
         self.set_params_flat(theta)
