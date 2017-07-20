@@ -8,7 +8,7 @@ from importlib import import_module
 import scipy.optimize
 from .keras_theano_setup import floatX, FNOPTS
 from keras.layers.core import Layer
-import ipdb
+#import ipdb
 from scipy.linalg import norm
 # ================================================================
 # Make agent 
@@ -92,7 +92,7 @@ def run_policy_gradient_algorithm(env, agent, usercfg=None, callback=None,debug=
         paths = get_paths(env, agent, cfg, seed_iter)
         compute_advantage(agent.baseline, paths, gamma=cfg["gamma"], lam=cfg["lam"])
         # VF Update ========
-        vf_stats, variance = agent.baseline.fit(paths)
+        vf_stats, variance, grad_w_norms = agent.baseline.fit(paths)
         # Pol Update ========
         pol_stats = agent.updater(paths)
         # Stats ========
@@ -101,7 +101,7 @@ def run_policy_gradient_algorithm(env, agent, usercfg=None, callback=None,debug=
         add_prefixed_stats(stats, "vf", vf_stats)
         add_prefixed_stats(stats, "pol", pol_stats)
         stats["TimeElapsed"] = time.time() - tstart
-        if callback: callback(stats,agent,variance,debug)
+        if callback: callback(stats,agent,variance,grad_w_norms,debug)
 
 def get_paths(env, agent, cfg, seed_iter):
     if cfg["parallel"]:
@@ -340,7 +340,7 @@ def validate_probtype(probtype, prob):
     entval_ll = - logliks.mean()
     entval_ll_stderr = logliks.std() / np.sqrt(N)
     entval = calcent(Mval).mean()
-    print entval, entval_ll, entval_ll_stderr
+    #print entval, entval_ll, entval_ll_stderr
     assert np.abs(entval - entval_ll) < 3 * entval_ll_stderr # within 3 sigmas
 
     # Check to see if kldiv[p,q] = - ent[p] - E_p[log q]
@@ -352,7 +352,7 @@ def validate_probtype(probtype, prob):
     logliks = calcloglik(Xval, Mval2)
     klval_ll = - entval - logliks.mean()
     klval_ll_stderr = logliks.std() / np.sqrt(N)
-    print klval, klval_ll,  klval_ll_stderr
+    #print klval, klval_ll,  klval_ll_stderr
     assert np.abs(klval - klval_ll) < 3 * klval_ll_stderr # within 3 sigmas
 
 
@@ -413,7 +413,6 @@ class NnRegression(EzPickle):
         self.opt = LbfgsOptimizer(net, loss, var_list, symb_args, maxiter=maxiter, extra_losses={"mse":mse, "l2":l2})
 
     def fit(self, x_nx, ytarg_ny):
-        import ipdb
         inp=self.net.input
         from keras import backend as K
 
@@ -427,7 +426,7 @@ class NnRegression(EzPickle):
         nY = ytarg_ny.shape[1]
         ypredold_ny = self.predict(x_nx)
         # weird considers predicted as 0.1 still in the old.
-        out = self.opt.update(x_nx, ytarg_ny*self.mixfrac + ypredold_ny*(1-self.mixfrac))
+        out,grad_w_norms = self.opt.update(x_nx, ytarg_ny*self.mixfrac + ypredold_ny*(1-self.mixfrac))
         yprednew_ny = self.predict(x_nx)
         out["PredStdevBefore"] = ypredold_ny.std()
         out["PredStdevAfter"] = yprednew_ny.std()
@@ -437,7 +436,7 @@ class NnRegression(EzPickle):
             out["EV_after"] =  explained_variance_2d(yprednew_ny, ytarg_ny)[0]
         else:
             out["EV_avg"] = explained_variance(yprednew_ny.ravel(), ytarg_ny.ravel())
-        return out, variance
+        return out, variance,grad_w_norms
 
 
 class NnVf(object):
@@ -542,18 +541,17 @@ class LbfgsOptimizer(EzFlat):
             bias_size = bias_shape[0]
             grad_w=opt_info['grad'][start:start+wts_size].reshape(wts_shape)
             start += wts_size+bias_size
-            ipdb.set_trace()
             grad_w_norms.append(norm(grad_w,axis=0))
                 
         del opt_info['grad']
-        print opt_info
+        #print opt_info
         self.set_params_flat(theta)
         losses_after = self.f_losses(*args)
         info = OrderedDict()
         for (name,lossbefore, lossafter) in zip(self.all_losses.keys(), losses_before, losses_after):
             info[name+"_before"] = lossbefore
             info[name+"_after"] = lossafter        
-        return info
+        return info,grad_w_norms
 
 def numel(x):
     return T.prod(x.shape)

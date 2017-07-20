@@ -84,14 +84,14 @@ class TrpoUpdater(EzFlat, EzPickle):
             stepdir = cg(fisher_vector_product, -g)
             shs = .5*stepdir.dot(fisher_vector_product(stepdir))
             lm = np.sqrt(shs / cfg["max_kl"])
-            print "lagrange multiplier:", lm, "gnorm:", np.linalg.norm(g)
+            #print "lagrange multiplier:", lm, "gnorm:", np.linalg.norm(g)
             fullstep = stepdir / lm
             neggdotstepdir = -g.dot(stepdir)
             def loss(th):
                 self.set_params_flat(th)
                 return self.compute_losses(*args)[0] #pylint: disable=W0640
             success, theta = linesearch(loss, thprev, fullstep, neggdotstepdir/lm)
-            print "success", success
+            #print "success", success
             self.set_params_flat(theta)
         losses_after = self.compute_losses(*args)
 
@@ -106,16 +106,16 @@ def linesearch(f, x, fullstep, expected_improve_rate, max_backtracks=10, accept_
     Backtracking linesearch, where expected_improve_rate is the slope dy/dx at the initial point
     """
     fval = f(x)
-    print "fval before", fval
+    #print "fval before", fval
     for (_n_backtracks, stepfrac) in enumerate(.5**np.arange(max_backtracks)):
         xnew = x + stepfrac*fullstep
         newfval = f(xnew)
         actual_improve = fval - newfval
         expected_improve = expected_improve_rate*stepfrac
         ratio = actual_improve/expected_improve
-        print "a/e/r", actual_improve, expected_improve, ratio
+        #print "a/e/r", actual_improve, expected_improve, ratio
         if ratio > accept_ratio and actual_improve > 0:
-            print "fval after", newfval
+            #print "fval after", newfval
             return True, xnew
     return False, x
 

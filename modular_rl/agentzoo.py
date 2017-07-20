@@ -18,7 +18,7 @@ MLP_OPTIONS = [
     ("activation", str, "tanh", "nonlinearity")
 ]
 
-def make_mlps(ob_space, ac_space, cfg):
+def make_mlps(ob_space, ac_space, cfg,wt_scale):
     assert isinstance(ob_space, Box)
     hid_sizes = cfg["hid_sizes"]
     if isinstance(ac_space, Box):
@@ -49,10 +49,10 @@ def make_mlps(ob_space, ac_space, cfg):
         inshp = dict(input_shape=(ob_space.shape[0]+1,)) if i==0 else {} # add one extra feature for timestep
         vfnet.add(Dense(layeroutsize, activation=cfg["activation"], init="glorot_uniform",**inshp))
     vfnet.add(Dense(1))
-
-    for layer in vfnet.layers:
-        layer.W.set_value(layer.W.get_value(borrow=True)*1000)
     
+    for layer in vfnet.layers:
+        layer.W.set_value(layer.W.get_value(borrow=True)*wt_scale)
+      
     baseline = NnVf(vfnet, cfg["timestep_limit"], dict(mixfrac=0.1))
     return policy, baseline
 
@@ -120,9 +120,9 @@ class DeterministicAgent(AgentWithPolicy):
 
 class TrpoAgent(AgentWithPolicy):
     options = MLP_OPTIONS + PG_OPTIONS + TrpoUpdater.options + FILTER_OPTIONS
-    def __init__(self, ob_space, ac_space, usercfg):
+    def __init__(self, ob_space, ac_space, usercfg,wt_scale):
         cfg = update_default_config(self.options, usercfg)
-        policy, self.baseline = make_mlps(ob_space, ac_space, cfg)
+        policy, self.baseline = make_mlps(ob_space, ac_space, cfg,wt_scale)
         obfilter, rewfilter = make_filters(cfg, ob_space)
         self.updater = TrpoUpdater(policy, cfg)
         AgentWithPolicy.__init__(self, policy, obfilter, rewfilter)
